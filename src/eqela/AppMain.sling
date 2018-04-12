@@ -1,0 +1,199 @@
+
+/*
+ * This file is part of Eqela CLI
+ * Copyright (c) 2018 Job and Esther Technologies Oy
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
+class is ConsoleApplicationMain:
+
+import capex.console
+import capex.util
+
+var api = new LiveService()
+
+func getConfigFile as File:
+	return Environment.getApplicationDataDirectory("eqela").entry("client.config")
+
+func readConfig
+{
+	var cfgfile = getConfigFile()
+	Log.debug(ctx, "Reading config file: `" .. cfgfile.getPath() .. "'")
+	var cfg = SimpleConfigFile.readFileAsMap(cfgfile)
+	if cfg {
+		var sessionid = cfg.getString("sessionid")
+		if sessionid:
+			api.setSessionid(sessionid)
+	}
+}
+
+func writeConfig
+{
+	var cfgfile = getConfigFile()
+	cfgfile.getParent().createDirectoryRecursive()
+	var map = new DynamicMap()
+	var sid = api.getSessionid()
+	if not sid:
+		sid = ""
+	map.set("sessionid", sid)
+	Log.debug(ctx, "Writing config file: `" .. cfgfile.getPath() .. "'")
+	if not SimpleConfigFile.forMap(map).write(cfgfile):
+		Log.error(ctx, "Failed to write config: `" .. cfgfile.getPath() .. "': " .. cfgfile.getLastErrorDescription())
+}
+
+func usage
+{
+	var info = UsageInfo.forCommand("eqela")
+	info.addFlag("help", "Show help / usage")
+	info.addFlag("version", "Show version")
+	info.addFlag("debug", "Display debug messages")
+	info.addSection("Subcommands")
+	info.addParameter("execute", "Execute a local script")
+	info.addParameter("live-login", "Log in to an Eqela Live service")
+	info.addParameter("live-logout", "Log out from an Eqela Live service")
+	info.addParameter("live-profile", "Display current Eqela Live profile")
+	info.addParameter("live-create", "Create a new project")
+	info.addParameter("live-translate", "Translate a source code file")
+	ConsoleApplication.PRINT_HEADER(stdout, null)
+	stdout.println(info.toString())
+}
+
+func executeLogin(args as vector<CommandLineArgument>) private as bool
+{
+	assert String.isEmpty(api.getSessionid()):
+		Log.error(ctx, "Already logged in")
+	var v = false
+	print("username: ")
+	var username = readLine()
+	print("password: ")
+	var password = readLineWithoutEcho()
+	Log.status(ctx, "Initializing session..")
+	api.login(username, password, func(status as bool) {
+		Log.status(ctx, null)
+		Log.debug(ctx, "Login status: `" .. String.asString(status) .. "'")
+		if status {
+			Log.info(ctx, "Successfully logged in.")
+		}
+		else {
+			Log.error(ctx, "Error when logging in: `" .. String.asString(api.getLastError()) .. "'")
+		}
+	})
+	writeConfig()
+	return v
+}
+
+func executeLogout(args as vector<CommandLineArgument>) private as bool
+{
+	assert String.isNotEmpty(api.getSessionid()):
+		Log.error(ctx, "No active session. Cannot log out.")
+	Log.status(ctx, "Terminating session..")
+	var v = true
+	api.logout(func(success as bool) {
+		Log.status(ctx, null)
+		if success {
+			Log.debug(ctx, "Logout complete, sessionid now " .. api.getSessionid())
+		}
+		else {
+			Log.error(ctx, String.asString(api.getLastError()))
+		}
+		v = success
+	})
+	writeConfig()
+	return true
+}
+
+func executeGetProfile(args as vector<CommandLineArgument>) private as bool
+{
+	api.getProfile(func(profile as LiveService.ProfileModel) {
+		if not profile {
+			Log.error(ctx, "Failed to get profile: " .. String.asString(api.getLastError()))
+		}
+		else {
+			Log.info(ctx, JSONEncoder.encode(profile.toJsonObject()))
+		}
+	})
+	return true
+}
+
+func executeCommand(cmd as string, cmdArgs as vector<CommandLineArgument>) as bool
+{
+	if cmd == "execute" || cmd == "exec" || cmd == "x":
+		return new ExecuteApp().setCtx(ctx).executeWithParsedArguments(cmdArgs)
+	if cmd == "live-login":
+		return executeLogin(cmdArgs)
+	if cmd == "live-logout":
+		return executeLogout(cmdArgs)
+	if cmd == "live-profile":
+		return executeGetProfile(cmdArgs)
+	if cmd == "live-create":
+		return new CreateApp().setApi(api).setCtx(ctx).executeWithParsedArguments(cmdArgs)
+	if cmd == "live-translate":
+		return new TranslateApp().setApi(api).setCtx(ctx).executeWithParsedArguments(cmdArgs)
+	Log.error(ctx, "Unsupported command: `" .. cmd .. "'")
+	return false
+}
+
+func execute override as bool
+{
+	handleVerbosityParams()
+	readConfig()
+	var command as string
+	var commandArgs = new vector<CommandLineArgument>
+	foreach arg in args {
+		if command {
+			commandArgs += arg
+			continue
+		}
+		if arg.isFlag("help") || arg.isFlag("h") {
+			usage()
+			return true
+		}
+		else if arg.isFlag("version") || arg.isFlag("v") {
+			PRINT VALUE "version"
+			return true
+		}
+		else if arg.isParameter() {
+			if String.endsWith(arg.parameter, ".qx") {
+				command = "execute"
+				commandArgs += arg
+			}
+			else {
+				command = arg.parameter
+			}
+		}
+		else {
+			arg.reportAsUnsupported(ctx)
+			return false
+		}
+	}
+	if String.isEmpty(command) {
+		usage()
+		return false
+	}
+	if ctx.isInDebugMode() {
+		api.setDebugCallback(func(info as string) {
+			Log.debug(ctx, "[API] " .. info)
+		})
+	}
+	return executeCommand(command, commandArgs)
+}
+
+main:
+	return executeMain(new this(), args)

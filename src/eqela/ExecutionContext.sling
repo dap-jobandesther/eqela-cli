@@ -1,0 +1,377 @@
+
+/*
+ * This file is part of Eqela CLI
+ * Copyright (c) 2018 Job and Esther Technologies Oy
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
+class:
+
+prop ctx as LoggingContext
+prop cacheDirectory as File
+prop repositories as map<string,vector<PackageRepository>>
+prop forceUpdateTools = false
+prop forceUpdateLibraries = false
+prop customLibraryPaths as map<string,File>
+prop customToolPaths as map<string,File>
+prop defaultProperties as map<string,string>
+
+ctor
+{
+	setDefaultProperty("date", DateTime.forNow().toStringDate(0 as char))
+}
+
+func setDefaultProperty(key as string, value as string)
+{
+	assert key
+	if not defaultProperties:
+		defaultProperties = new map<string,string>
+	defaultProperties[key] = value
+}
+
+func getInstallationDirectory(category as string, desc as PackageDescription) private as File
+{
+	assert category
+	assert String.indexOf(category, '/') < 0 && String.indexOf(category, '\\') < 0
+	assert cacheDirectory
+	assert desc
+	var cdir = assert cacheDirectory.entry(category).entry(desc.getVendor()).entry(desc.getName()).entry(desc.getVersion())
+	return cdir
+}
+
+func getToolDirectory(desc as PackageDescription) private as File:
+	return getInstallationDirectory("tools", desc)
+
+func getLibraryDirectory(desc as PackageDescription) private as File:
+	return getInstallationDirectory("libraries", desc)
+
+func isInstalled(category as string, desc as PackageDescription) as bool
+{
+	var cd = assert getInstallationDirectory(category, desc)
+	assert cd.isDirectory()
+	return true
+}
+
+func hasTool(desc as PackageDescription) as bool:
+	return isInstalled("tools", desc)
+
+func hasLibrary(desc as PackageDescription) as bool:
+	return isInstalled("libraries", desc)
+
+func addToRepositories(category as string, repo as PackageRepository)
+{
+	if not repositories:
+		repositories = new map<string,vector<PackageRepository>>
+	var vv = Map.get(repositories, category)
+	if not vv {
+		vv = new vector<PackageRepository>
+		repositories[category] = vv
+	}
+	vv += repo
+}
+
+func addToToolRepositories(repo as PackageRepository):
+	addToRepositories("tools", repo)
+
+func addToLibraryRepositories(repo as PackageRepository):
+	addToRepositories("libraries", repo)
+
+func getRepositories(category as string) as vector<PackageRepository>
+{
+	assert repositories
+	assert category
+	return Map.get(repositories, category)
+}
+
+func getToolRepositories as vector<PackageRepository>:
+	return getRepositories("tools")
+
+func getLibraryRepositories as vector<PackageRepository>:
+	return getRepositories("libraries")
+
+func uninstallPackage(category as string, desc as PackageDescription)
+{
+	var cdir = getInstallationDirectory(category, desc)
+	if not cdir || cdir.isDirectory() == false:
+		throw ExceptionWithString.forString("Uninstall: Failed to get the installation directory for package: `" .. desc.toString() .. "'")
+	if not cdir.removeRecursive():
+		throw ExceptionWithString.forString("Failed to remove directory: `" .. cdir.getPath() .. "'")
+}
+
+func uninstallTool(desc as PackageDescription):
+	uninstallPackage("tools", desc)
+
+func uninstallLibrary(desc as PackageDescription):
+	uninstallPackage("libraries", desc)
+
+func installPackage(category as string, desc as PackageDescription, force as bool = false) private
+{
+	if force == false && isInstalled(category, desc) {
+		Log.debug(ctx, "Package already installed in `" .. category .. "': `" .. desc.toString() .. "'. Not installing again.")
+		return
+	}
+	if not desc:
+		throw ExceptionWithString.forString("null description")
+	Log.debug(ctx, "Trying to install package in category `" .. category .. "': `" .. desc.toString() .. "'")
+	var repos = getRepositories(category)
+	if Vector.getSize(repos) < 1:
+		Log.warning(ctx, "No package repositories defined for category `" .. category .. "'")
+	foreach repo in repos {
+		if repo.hasInstaller(ctx, desc) == false {
+			Log.debug(ctx, "Repository `" .. repo.getRepositoryName() .. "' does not have package: `" .. desc.toString() .. "'")
+			continue
+		}
+		var cdir = getInstallationDirectory(category, desc)
+		if not cdir:
+			throw ExceptionWithString.forString("Failed to determine directory for package: `" .. desc.toString() .. "'")
+		var ii = repo.getInstaller(ctx, desc, null)
+		if not ii:
+			throw ExceptionWithString.forString("Retrieval of package failed: `" .. desc.toString() .. "'")
+		Log.status(ctx, "Installing package: `" .. desc.toString() .. "' ..")
+		var r = PackageInstaller.installPackageToDirectory(ctx, ii, cdir)
+		repo.releaseInstaller(ctx, ii)
+		Log.status(ctx, null)
+		if not r:
+			throw ExceptionWithString.forString("Failed to install package: `" .. ii.getPath() .. "'")
+		return
+	}
+	throw ExceptionWithString.forString("Package not found: `" .. desc.toString() .. "'")
+}
+
+func installTool(desc as PackageDescription, force as bool = false):
+	installPackage("tools", desc, force)
+
+func installLibrary(desc as PackageDescription, force as bool = false):
+	installPackage("libraries", desc, force)
+
+func executeScriptFunction(script as Script, functionName as string, cmap as map<string,PackageDescription>, aprops as map<string,string>, plenv as map<string,string>, args as vector<string>) private
+{
+	var functions = script.getFunctions()
+	if Vector.getSize(functions) < 1:
+		throw ExceptionWithString.forString("Script has no functions")
+	var function as ScriptFunction
+	if String.isEmpty(functionName) {
+		var functions = script.getFunctions()
+		function = Vector.get(functions, 0)
+		if function == null:
+			throw ExceptionWithString.forString("Failed to get the default function!")
+	}
+	else {
+		function = script.getFunction(functionName)
+		if function == null:
+			throw ExceptionWithString.forString("No such function: `" .. functionName .. "'")
+	}
+	var props = aprops
+	if args {
+		props = Map.dup(aprops) as! map<string,string>
+		if not props:
+			props = new map<string,string>
+		foreach arg in args {
+			var comps = String.split(arg, '=', 2)
+			var key = Vector.get(comps, 0)
+			var val = Vector.get(comps, 1)
+			if String.isEmpty(key):
+				throw ScriptException.forError(null, "Invalid argument with empty key: `" .. arg .. "'")
+			props[key] = val
+		}
+	}
+	Log.debug(ctx, "Executing function `" .. function.getName() .. "' from script: `" .. script.getSourcePath() .. "'")
+	var cwd = script.getExecutionDirectory()
+	foreach ostatement in function.getStatements() {
+		var statement = ostatement.dupWithVariableValues(props)
+		var command = statement.getCommand()
+		var tool = statement.getTool()
+		var args = statement.getArguments()
+		if String.isEmpty(tool) {
+			if command == "exec" {
+				var cmd as string
+				var cmdargs = new vector<string>
+				foreach arg in args {
+					if not cmd {
+						cmd = arg
+					}
+					else {
+						cmdargs += arg
+					}
+				}
+				if String.isEmpty(cmd):
+					throw ScriptException.forError(statement.getSource(), "Empty command")
+				var cmdf = File.forRelativePath(cmd, cwd).asExecutable()
+				if cmdf.exists() == false:
+					throw ScriptException.forError(statement.getSource(), "Command executable was not found: `" .. cmd .. "'")
+				var pl = ProcessLauncher.forFile(cmdf)
+				if not pl:
+					throw ScriptException.forError(statement.getSource(), "Failed to create process launcher for command: `" .. cmd .. "'")
+				pl.setCwd(cwd)
+				pl.setEnv(plenv)
+				foreach arg in cmdargs:
+					pl.addToParams(arg)
+				Log.debug(ctx, "Executing command: `" .. String.asString(pl) .. "'")
+				var v = pl.execute()
+				if v != 0:
+					throw ExceptionWithString.forString("Command `" .. command .. "' returned with errors status `" .. String.forInteger(v) .. "'")
+				continue
+			}
+			if command == "call" {
+				var fn = Vector.get(args, 0)
+				if String.isEmpty(fn):
+					throw ScriptException.forError(statement.getSource(), "`call' statement without parameter")
+				var ps = new map<string,string>
+				foreach key in Map.getKeys(props) as! vector<string>:
+					ps[key] = props[key]
+				var nargs = new vector<string>
+				for(var n=1; n<Vector.getSize(args); n++):
+					nargs += Vector.get(args, n)
+				executeScriptFunction(script, fn, cmap, ps, plenv, nargs)
+				continue
+			}
+			if command == "info" {
+				Log.info(ctx, String.combine(args, ' '))
+				continue
+			}
+			if command == "warning" {
+				Log.warning(ctx, String.combine(args, ' '))
+				continue
+			}
+			if command == "error" {
+				Log.error(ctx, String.combine(args, ' '))
+				continue
+			}
+			if command == "debug" {
+				Log.debug(ctx, String.combine(args, ' '))
+				continue
+			}
+			throw ScriptException.forError(statement.getSource(), "Unsupported internal command: `" .. command .. "'")
+		}
+		Log.debug(ctx, "Executing command `" .. command .. "' from tool `" .. tool .. "'")
+		var toolDirectory as File
+		if customToolPaths:
+			toolDirectory = Map.get(customToolPaths, tool)
+		if not toolDirectory {
+			var desc = Map.get(cmap, tool)
+			if not desc:
+				throw ScriptException.forError(statement.getSource(), "Unable to find installed tool: `" .. tool .. "'")
+			toolDirectory = getToolDirectory(desc)
+		}
+		if not toolDirectory:
+			throw ScriptException.forError(statement.getSource(), "Unable to find tool: `" .. tool .. "'.")
+		assert toolDirectory.isDirectory():
+			throw ScriptException.forError(statement.getSource(), "Tool directory is not a directory: `" .. toolDirectory.getPath() .. "'")
+		var f = toolDirectory.entry("bin").entry(command .. ".exe")
+		if not f.isFile():
+			f = toolDirectory.entry(command .. ".exe")
+		if not f.isFile():
+			throw ExceptionWithString.forString("Cannot execute command `" .. command .. "' from tool directory `" .. toolDirectory.getPath() .. "' (command executable not found)")
+		var pl = ProcessLauncher.forFile(f)
+		if not pl:
+			throw ExceptionWithString.forString("Failed to create process launcher for file: `" .. f.getPath() .. "'")
+		pl.setCwd(cwd)
+		pl.setEnv(plenv)
+		foreach arg in args:
+			pl.addToParams(arg)
+		Log.debug(ctx, "Executing command: `" .. String.asString(pl) .. "'")
+		var v = pl.execute()
+		if v != 0:
+			throw ExceptionWithString.forString("Command `" .. command .. "' returned with errors status `" .. String.forInteger(v) .. "'")
+	}
+}
+
+func doExecuteScript(script as Script, function as string, args as vector<string>) private
+{
+	var cmap = new map<string,PackageDescription>
+	foreach tool in script.getTools() {
+		var sn = tool.getShortName()
+		if String.isEmpty(sn):
+			throw ScriptException.forError(tool.getSource(), "Tool has no short name")
+		if customToolPaths && Map.get(customToolPaths, sn):
+			continue
+		try:
+			installTool(tool, forceUpdateTools)
+		catch e as Exception:
+			throw ScriptException.forError(tool.getSource(), String.asString(e))
+		cmap[sn] = tool
+	}
+	var props = new map<string,string>
+	if defaultProperties {
+		foreach key in Map.getKeys(defaultProperties) as vector<string>:
+			props[key] = Map.get(defaultProperties, key)
+	}
+	var sprops = script.getProperties()
+	if sprops {
+		foreach key in Map.getKeys(sprops) as vector<string>:
+			props[key] = Map.get(sprops, key)
+	}
+	var n = 0
+	loop {
+		n ++
+		if n > 10:
+			throw ScriptException.forError(script.getSourceReference(), "Too many recursions in substituting script variables")
+		var cc = 0
+		foreach key in Map.getKeys(props) as! vector<string> {
+			var val = Map.get(props, key)
+			var vals = Util.substituteVariables(val, props)
+			if String.equals(val, vals) == false {
+				props[key] = vals
+				cc ++
+			}
+		}
+		if cc == 0:
+			break
+	}
+	var plenv = new map<string,string>
+	foreach key in Map.getKeys(props) as vector<string>:
+		plenv["qx_" .. key] = Map.get(props, key)
+	foreach lib in script.getLibraries() {
+		var sn = lib.getShortName()
+		if String.isEmpty(sn):
+			throw ScriptException.forError(lib.getSource(), "Library has no short name")
+		if customLibraryPaths {
+			var cp = Map.get(customLibraryPaths, sn)
+			if cp {
+				props[sn] = cp.getPath()
+				continue
+			}
+		}
+		try:
+			installLibrary(lib, forceUpdateLibraries)
+		catch e as Exception:
+			throw ScriptException.forError(lib.getSource(), String.asString(e))
+		var libdir = getLibraryDirectory(lib)
+		if not libdir:
+			throw ScriptException.forError(lib.getSource(), "Failed to find library directory even after installation")
+		props[sn] = libdir.getPath()
+	}
+	executeScriptFunction(script, function, cmap, props, plenv, args)
+}
+
+func executeScript(script as Script, function as string, args as vector<string>) as bool
+{
+	var v = true
+	try {
+		if not script:
+			throw ExceptionWithString.forString("No script given to executeScript")
+		doExecuteScript(script, function, args)
+	}
+	catch e as Exception {
+		Log.error(ctx, String.asString(e))
+		v = false
+	}
+	return v
+}
