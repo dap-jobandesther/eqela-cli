@@ -42,9 +42,9 @@ buildApp {
 release {
 	igelle:tools/delete build
 	call buildApp id=eqela
-    igelle:tools/cpto build/${name} \
-        build/app/*/*.dll \
-        build/app/*/*.exe
+	igelle:tools/cpto build/${name} \
+		build/app/*/*.dll \
+		build/app/*/*.exe
 	igelle:tools/delete build/${name}/sling.module
 	igelle:tools/delete build/${name}/src
 	igelle:tools/zipdir build/${name}
