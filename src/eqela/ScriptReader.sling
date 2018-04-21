@@ -89,22 +89,13 @@ func tryReadFile(file as File, code as Script) private static
 				tryReadFile(file.getSibling(String.getSubString(line, 8)), code)
 				continue
 			}
-			if String.startsWith(line, "tool ") {
-				var cds = String.getSubString(line, 5)
+			if String.startsWith(line, "use ") || String.startsWith(line, "tool ") || String.startsWith(line, "lib ") {
+				var cds = Vector.get(String.split(line, ' ', 2), 1)
 				var cd = PackageDescription.forString(cds)
 				if not cd:
-					throw ScriptException.forError(src, "Invalid tool description: `" .. cds .. "'")
+					throw ScriptException.forError(src, "Invalid package description: `" .. cds .. "'")
 				cd.setSource(src)
-				code.addToTools(cd)
-				continue
-			}
-			if String.startsWith(line, "lib ") {
-				var cds = String.getSubString(line, 4)
-				var cd = PackageDescription.forString(cds)
-				if not cd:
-					throw ScriptException.forError(src, "Invalid library description: `" .. cds .. "'")
-				cd.setSource(src)
-				code.addToLibraries(cd)
+				code.addToUses(cd)
 				continue
 			}
 			if String.startsWith(line, "set ") {

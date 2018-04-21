@@ -22,9 +22,9 @@
 # SOFTWARE.
 #
 
-tool eqela:sling:r300
-tool igelle:tools:r2
-lib eqela:jkop:r3
+use eqela:sling:r304
+use igelle:tools:r3
+use eqela:jkop:20180421
 set version ${date}
 set name eqela-cli-${date}
 
@@ -39,9 +39,16 @@ buildApp {
 	eqela:sling/slingc src/${id} -target=dotnet -Dsling_project_version=${version} -libdir=${eqela:jkop}/src -output=build/app/${id}
 }
 
+buildAppRelease {
+	info
+	info Building app: ${id}
+	info
+	eqela:sling/slingc src/${id} -target=dotnet -Dsling_project_version=${version} -libdir=${eqela:jkop}/src -output=build/app/${id} -OstaticBuild=true
+}
+
 release {
 	igelle:tools/delete build
-	call buildApp id=eqela
+	call buildAppRelease id=eqela
 	igelle:tools/cpto build/${name} \
 		build/app/*/*.dll \
 		build/app/*/*.exe

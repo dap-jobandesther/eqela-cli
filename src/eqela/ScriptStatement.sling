@@ -24,16 +24,16 @@
 
 class:
 
-func forCommand(tool as string, command as string) static as this
+func forCommand(package as string, command as string) static as this
 {
 	var v = new this()
-	v.setTool(tool)
+	v.setPackage(package)
 	v.setCommand(command)
 	return v
 }
 
 prop source as SourceReference
-prop tool as string
+prop package as string
 prop command as string
 prop arguments as vector<string>
 
@@ -57,7 +57,7 @@ func dupWithVariableValues(vars as map<string,string>) as this
 {
 	var v = new this()
 	v.setSource(source)
-	v.setTool(Util.substituteVariables(getTool(), vars))
+	v.setPackage(Util.substituteVariables(getPackage(), vars))
 	v.setCommand(Util.substituteVariables(getCommand(), vars))
 	var args = new vector<string>
 	foreach arg in getArguments():

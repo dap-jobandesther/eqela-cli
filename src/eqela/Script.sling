@@ -27,8 +27,7 @@ class:
 prop sourceFile as File
 prop executionDirectory as File
 prop properties as map<string,string>
-prop tools as vector<PackageDescription>
-prop libraries as vector<PackageDescription>
+prop uses as vector<PackageDescription>
 prop functions as vector<ScriptFunction>
 
 func getSourceReference as SourceReference:
@@ -69,20 +68,12 @@ func getProperty(key as string) as string
 	return Map.get(properties, key)
 }
 
-func addToTools(pkg as PackageDescription)
+func addToUses(pkg as PackageDescription)
 {
 	assert pkg
-	if not tools:
-		tools = new vector<PackageDescription>
-	tools += pkg
-}
-
-func addToLibraries(pkg as PackageDescription)
-{
-	assert pkg
-	if not libraries:
-		libraries = new vector<PackageDescription>
-	libraries += pkg
+	if not uses:
+		uses = new vector<PackageDescription>
+	uses += pkg
 }
 
 func addToFunctions(function as ScriptFunction)

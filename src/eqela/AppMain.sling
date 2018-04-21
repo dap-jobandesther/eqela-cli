@@ -26,8 +26,10 @@ class is ConsoleApplicationMain:
 
 import capex.console
 import capex.util
+import capex.web
 
 var api = new LiveService()
+var exc = new ExecutionContext()
 
 func getConfigFile as File:
 	return Environment.getApplicationDataDirectory("eqela").entry("client.config")
@@ -60,18 +62,24 @@ func writeConfig
 
 func usage
 {
+	ConsoleApplication.PRINT_HEADER(stdout, null)
 	var info = UsageInfo.forCommand("eqela")
 	info.addFlag("help", "Show help / usage")
 	info.addFlag("version", "Show version")
 	info.addFlag("debug", "Display debug messages")
+	info.addFlag("force-update-packages", "Always install all packages even if already installed")
+	info.addOption("repository", "url", "Add a package repository url")
+	info.addOption("cachedir", "path", "Specify an alternative cache directory")
+	info.addOption("P<vendor:name>", "directory", "Configure a static package path")
+	info.addOption("api", "url", "Specify an alternative URL for Eqela Live service")
 	info.addSection("Subcommands")
-	info.addParameter("execute", "Execute a local script")
-	info.addParameter("live-login", "Log in to an Eqela Live service")
-	info.addParameter("live-logout", "Log out from an Eqela Live service")
+	info.addParameter("script", "Execute a local script")
+	info.addParameter("run", "Run a single command or statement")
+	info.addParameter("login", "Log in to an Eqela Live service")
+	info.addParameter("logout", "Log out from an Eqela Live service")
 	info.addParameter("live-profile", "Display current Eqela Live profile")
 	info.addParameter("live-create", "Create a new project")
 	info.addParameter("live-translate", "Translate a source code file")
-	ConsoleApplication.PRINT_HEADER(stdout, null)
 	stdout.println(info.toString())
 }
 
@@ -132,13 +140,120 @@ func executeGetProfile(args as vector<CommandLineArgument>) private as bool
 	return true
 }
 
+func executeScript(args as vector<CommandLineArgument>) private as bool
+{
+	var script as File
+	var function as string
+	var functionParams as vector<string>
+	foreach arg in args {
+		if script && function {
+			if not functionParams:
+				functionParams = new vector<string>
+			functionParams += arg.arg
+			continue
+		}
+		if arg.isParameter() {
+			if script == null {
+				script = File.forPath(arg.parameter)
+				continue
+			}
+			if function == null {
+				function = arg.parameter
+				continue
+			}
+		}
+		arg.reportAsUnsupported(ctx)
+		return false
+	}
+	assert script:
+		Log.error(ctx, "No script defined")
+	Log.debug(ctx, "Reading script: `" .. script.getPath() .. "'")
+	var code = assert ScriptReader.readFile(ctx, script):
+		Log.error(ctx, "Failed to read script: `" .. script.getPath() .. "'")
+	return exc.executeScript(code, function, functionParams)
+}
+
+func executeRun(args as vector<CommandLineArgument>) private as bool
+{
+	var cwd as File
+	var package as string
+	var command as string
+	var arguments = new vector<string>
+	foreach arg in args {
+		if package == null {
+			if arg.isOption("cwd") {
+				cwd = File.forPath(arg.value)
+				continue
+			}
+			package = arg.arg
+			continue
+		}
+		if command == null {
+			command = arg.arg
+			continue
+		}
+		arguments += arg.arg
+	}
+	assert String.isNotEmpty(package):
+		Log.error(ctx, "No package defined")
+	assert String.isNotEmpty(command):
+		Log.error(ctx, "No command defined")
+	if not cwd:
+		cwd = Environment.getCurrentDirectory()
+	var pdesc = assert PackageDescription.forString(package):
+		Log.error(ctx, "Invalid package description: `" .. package .. "'")
+	var script = new Script()
+	script.setExecutionDirectory(cwd)
+	script.addToUses(pdesc)
+	var ff = new ScriptFunction()
+	ff.setName("execute")
+	ff.setScript(script)
+	var stmt = ScriptStatement.forCommand(pdesc.getVendor() .. ":" .. pdesc.getName(), command)
+	stmt.setArguments(arguments)
+	ff.addToStatements(stmt)
+	script.addToFunctions(ff)
+	return exc.executeScript(script, "execute", new vector<string>)
+}
+
+func executeInstall(args as vector<CommandLineArgument>) private as bool
+{
+	var force = false
+	var installs = new vector<string>
+	foreach arg in args {
+		if arg.isFlag("force") || arg.isFlag("f") {
+			force = true
+		}
+		else if arg.isParameter() {
+			installs += arg.parameter
+		}
+		else {
+			arg.reportAsUnsupported(ctx)
+			return false
+		}
+	}
+	foreach install in installs {
+		try {
+			exc.installPackage(PackageDescription.forString(install), force)
+		}
+		catch(e as Exception) {
+			Log.error(ctx, String.asString(e))
+			return false
+		}
+	}
+	return true
+}
+
 func executeCommand(cmd as string, cmdArgs as vector<CommandLineArgument>) as bool
 {
-	if cmd == "execute" || cmd == "exec" || cmd == "x":
-		return new ExecuteApp().setCtx(ctx).executeWithParsedArguments(cmdArgs)
-	if cmd == "live-login":
+	if cmd == "script" || cmd == "qx":
+		return executeScript(cmdArgs)
+	if cmd == "install":
+		return executeInstall(cmdArgs)
+	if cmd == "run":
+		return executeRun(cmdArgs)
+	if cmd == "login":
 		return executeLogin(cmdArgs)
-	if cmd == "live-logout":
+	if cmd == "logout":
 		return executeLogout(cmdArgs)
 	if cmd == "live-profile":
 		return executeGetProfile(cmdArgs)
@@ -154,6 +269,11 @@ func execute override as bool
 {
 	handleVerbosityParams()
 	readConfig()
+	var webclient = NativeWebClient.instance()
+	if not webclient:
+		Log.warning(ctx, "No webclient available. Cannot perform any online actions.")
+	exc.setCtx(ctx)
+	exc.addToRepositories(PackageRepository.forUrl("http://qx.eqela.com", webclient))
 	var command as string
 	var commandArgs = new vector<CommandLineArgument>
 	foreach arg in args {
@@ -169,9 +289,24 @@ func execute override as bool
 			PRINT VALUE "version"
 			return true
 		}
+		else if arg.isFlag("force-update-packages") {
+			exc.setForceUpdatePackages(true)
+		}
+		else if arg.isOption("repository") {
+			exc.addToRepositories(PackageRepository.forUrl(arg.value, webclient))
+		}
+		else if arg.isOption("cachedir") {
+			exc.setCacheDirectory(File.forPath(arg.value))
+		}
+		else if arg.isOption() && (String.startsWith(arg.key, "P") || String.startsWith(arg.key, "T") || String.startsWith(arg.key, "L")) {
+			exc.addToCustomPackagePaths(String.getSubString(arg.key, 1), File.forPath(arg.value))
+		}
+		else if arg.isOption("api") {
+			api.setApiUrl(arg.value)
+		}
 		else if arg.isParameter() {
 			if String.endsWith(arg.parameter, ".qx") {
-				command = "execute"
+				command = "script"
 				commandArgs += arg
 			}
 			else {
