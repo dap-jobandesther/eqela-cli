@@ -26,51 +26,81 @@ class is PackageRepository:
 
 import capex.web
 
-func forUrl(url as string, webClient as WebClient) static as this
+func forUrl(url as string, webClient as WebClient, platform as string) static as this
 {
 	var v = new this()
 	v.setUrl(url)
 	v.setWebClient(webClient)
+	v.setPlatform(platform)
 	return v
 }
 
 prop url as string
 prop webClient as WebClient
+prop platform as string
+var contentCache = new map<string,string>
 
-func toFileName(desc as PackageDescription) private as string
+func toFileName(desc as PackageDescription, platform as string) private as string
 {
-	assert desc
-	return desc.getVendor() .. "-" .. desc.getName() .. "-" .. desc.getVersion() .. ".zip"
+	var sb = new StringBuilder()
+	sb.append(desc.getVendor())
+	sb.append('_')
+	sb.append(desc.getName())
+	sb.append('_')
+	sb.append(desc.getVersion())
+	sb.append('_')
+	sb.append(platform)
+	sb.append(".pkq")
+	return sb.toString()
 }
 
 func getRepositoryName override as string:
 	return url
 
-func hasInstaller(ctx as LoggingContext, desc as PackageDescription) override as bool
+func findInstaller(ctx as LoggingContext, desc as PackageDescription, platform as string) override as object
 {
 	assert desc
 	assert webClient
-	var v = false
-	Log.status(ctx, "Checking for package `" .. desc.toString() .. "' in: `" .. url .. "'..")
-	Log.debug(ctx, "Checking URL `" .. url .. "'..")
-	webClient.query("GET", url, null, null, func(status as string, headers as KeyValueList<string,string>, body as buffer) {
-		var content = String.forUTF8Buffer(body)
-		Log.debug(ctx, "Received content: `" .. content .. "'")
-		var lookFor = "href=\"" .. toFileName(desc) .. "\""
-		if String.contains(content, lookFor):
-			v = true
-	})
+	var vendor = assert desc.getVendor():
+		Log.error(ctx, "No vendor for package: `" .. desc.toString() .. "'")
+	var v as string
+	var myurl = url .. "/" .. vendor
+	Log.status(ctx, "Checking for package `" .. desc.toString() .. "' for platform `" .. platform .. "' in: `" .. myurl .. "'..")
+	var content as string
+	if contentCache:
+		content = Map.get(contentCache, myurl)
+	if content == null {
+		webClient.query("GET", myurl, null, null, func(status as string, headers as KeyValueList<string,string>, body as buffer) {
+			Log.debug(ctx, "Retrieving URL `" .. myurl .. "'..")
+			content = String.forUTF8Buffer(body)
+			if content {
+				Log.debug(ctx, "Received content: `" .. content .. "'")
+				Map.set(contentCache, myurl, content)
+			}
+		})
+	}
+	else {
+		Log.debug(ctx, "Using cached content: `" .. content .. "'")
+	}
+	assert content:
+		Log.error(ctx, "Failed to get package index for url: `" .. myurl .. "'")
+	var name = toFileName(desc, platform)
+	var lookFor = "href=\"" .. name .. "\""
+	if String.contains(content, lookFor) {
+		v = myurl .. "/" .. name
+	}
 	Log.status(ctx, null)
-	Log.debug(ctx, "hasInstaller `" .. desc.toString() .. "': " .. String.asString(v))
+	Log.debug(ctx, "findInstaller `" .. desc.toString() .. "': " ..v)
 	return v
 }
 
-func getInstaller(ctx as LoggingContext, desc as PackageDescription, listener as function<void,long,long>) override as File
+func getInstaller(ctx as LoggingContext, desc as PackageDescription, hint as object, listener as function<void,long,long>) override as File
 {
 	assert desc
 	assert webClient
+	var furl = assert hint as string:
+		Log.error(ctx, "No package URL was found")
 	var v as File
-	var furl = url .. "/" .. toFileName(desc)
 	Log.status(ctx, "Downloading package: `" .. furl .. "'..")
 	Log.debug(ctx, "Retrieving URL `" .. furl .. "'..")
 	webClient.query("GET", furl, null, null, func(status as string, headers as KeyValueList<string,string>, body as buffer) {

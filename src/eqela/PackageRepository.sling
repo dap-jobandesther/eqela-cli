@@ -26,19 +26,17 @@ class abstract:
 
 import capex.web
 
-func forUrl(url as string, webClient as WebClient) static as this
+func forUrl(url as string, webClient as WebClient, platform as string) static as this
 {
 	assert url
-	if url == "github":
-		return PackageRepositoryGithub.forWebClient(webClient)
 	if String.startsWith(url, "file://"):
 		return PackageRepositoryDirectory.forDirectory(File.forPath(String.getSubString(url, 7)))
 	if String.startsWith(url, "http://") || String.startsWith(url, "https://"):
-		return PackageRepositoryWeb.forUrl(url, webClient)
+		return PackageRepositoryWeb.forUrl(url, webClient, platform)
 	return PackageRepositoryDirectory.forDirectory(File.forPath(url))
 }
 
 func getRepositoryName abstract as string
-func hasInstaller(ctx as LoggingContext, desc as PackageDescription) abstract as bool
-func getInstaller(ctx as LoggingContext, desc as PackageDescription, listener as function<void,long,long>) abstract as File
+func findInstaller(ctx as LoggingContext, desc as PackageDescription, platform as string) abstract as object
+func getInstaller(ctx as LoggingContext, desc as PackageDescription, hint as object, listener as function<void,long,long>) abstract as File
 func releaseInstaller(ctx as LoggingContext, file as File) abstract

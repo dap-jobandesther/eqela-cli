@@ -65,7 +65,13 @@ func tryReadFile(file as File, code as Script) private static
 			var cmds = String.split(words[0], '/', 2)
 			var cmd as ScriptStatement
 			if Vector.getSize(cmds) < 2 {
-				cmd = ScriptStatement.forCommand(null, words[0])
+				var pp = String.split(words[0], ':', 2)
+				if Vector.getSize(pp) > 1 {
+					cmd = ScriptStatement.forCommand(words[0], pp[1])
+				}
+				else {
+					cmd = ScriptStatement.forCommand(null, words[0])
+				}
 			}
 			else {
 				cmd = ScriptStatement.forCommand(cmds[0], cmds[1])

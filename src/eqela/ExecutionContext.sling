@@ -30,11 +30,24 @@ prop repositories as vector<PackageRepository>
 prop forceUpdatePackages = false
 prop customPackagePaths as map<string,File>
 prop defaultProperties as map<string,string>
+prop platforms as vector<string>
 
 ctor
 {
 	setDefaultProperty("date", DateTime.forNow().toStringDate(0 as char))
 	setCacheDirectory(Environment.getApplicationDataDirectory("eqela").entry("cache"))
+	setPlatform(null)
+}
+
+func setPlatform(platform as string)
+{
+	platforms = new vector<string>
+	if platform:
+		platforms += platform
+	IFDEF "target_netcore" {
+		platforms += "netcore21"
+	}
+	platforms += "all"
 }
 
 func addToCustomPackagePaths(id as string, file as File)
@@ -91,7 +104,7 @@ func uninstallPackage(desc as PackageDescription)
 func installPackage(desc as PackageDescription, force as bool = false)
 {
 	if forceUpdatePackages == false && force == false && isInstalled(desc) {
-		Log.debug(ctx, "Package already installed in: `" .. desc.toString() .. "'. Not installing again.")
+		Log.debug(ctx, "Package already installed: `" .. desc.toString() .. "'. Not installing again.")
 		return
 	}
 	if not desc:
@@ -101,14 +114,20 @@ func installPackage(desc as PackageDescription, force as bool = false)
 	if Vector.getSize(repos) < 1:
 		Log.warning(ctx, "No package repositories defined.")
 	foreach repo in repos {
-		if repo.hasInstaller(ctx, desc) == false {
+		var installer as object
+		foreach platform in platforms {
+			installer = repo.findInstaller(ctx, desc, platform)
+			if installer:
+				break
+		}
+		if not installer {
 			Log.debug(ctx, "Repository `" .. repo.getRepositoryName() .. "' does not have package: `" .. desc.toString() .. "'")
 			continue
 		}
 		var cdir = getInstallationDirectory(desc)
 		if not cdir:
 			throw ExceptionWithString.forString("Failed to determine directory for package: `" .. desc.toString() .. "'")
-		var ii = repo.getInstaller(ctx, desc, null)
+		var ii = repo.getInstaller(ctx, desc, installer, null)
 		if not ii:
 			throw ExceptionWithString.forString("Retrieval of package failed: `" .. desc.toString() .. "'")
 		Log.status(ctx, "Installing package: `" .. desc.toString() .. "' ..")
@@ -235,32 +254,49 @@ func executeScriptFunction(script as Script, functionName as string, cmap as map
 			throw ScriptException.forError(statement.getSource(), "Unable to find package: `" .. package .. "'.")
 		assert packageDirectory.isDirectory():
 			throw ScriptException.forError(statement.getSource(), "Package directory is not a directory: `" .. packageDirectory.getPath() .. "'")
-		var f = packageDirectory.entry("bin").entry(command .. ".exe")
-		if not f.isFile():
-			f = packageDirectory.entry(command .. ".exe")
-		if not f.isFile() {
-			var fc = packageDirectory.entry("bin").entry(command)
-			if fc && fc.isExecutable():
-				f = fc
+		var pddata = packageDirectory.entry("data")
+		assert pddata.isDirectory():
+			throw ScriptException.forError(statement.getSource(), "Unsupported directory format for package: `" .. packageDirectory.getPath() .. "'. No `data' directory.")
+		var dll = pddata.entry(command .. ".dll")
+		if dll.isFile() {
+			var pl = ProcessLauncher.forSelf()
+			if not pl:
+				throw ExceptionWithString.forString("Failed to create a process-selflauncher")
+			pl.setCwd(cwd)
+			pl.setEnv(plenv)
+			pl.addToParams("execdll")
+			pl.addToParams(dll.getPath())
+			foreach arg in args:
+				pl.addToParams(arg)
+			Log.debug(ctx, "Executing command: `" .. String.asString(pl) .. "'")
+			var eb = new StringBuilder()
+			pl.setErrorBuffer(eb)
+			var v = pl.execute()
+			Log.debug(ctx, "Command executed: Return value = " .. String.forInteger(v))
+			if v != 0:
+				throw ExceptionWithString.forString("Command `" .. command .. "' returned with error status `" .. String.forInteger(v) .. "': " .. eb.toString())
+			continue
 		}
-		if not f.isFile() {
-			var fc = packageDirectory.entry(command)
-			if fc && fc.isExecutable():
-				f = fc
-		}
+		var f = pddata.entry("bin").entry(command).asExecutable()
 		if not f.isFile():
-			throw ExceptionWithString.forString("Cannot execute command `" .. command .. "' from package directory `" .. packageDirectory.getPath() .. "' (command executable not found)")
-		var pl = ProcessLauncher.forFile(f)
-		if not pl:
-			throw ExceptionWithString.forString("Failed to create process launcher for file: `" .. f.getPath() .. "'")
-		pl.setCwd(cwd)
-		pl.setEnv(plenv)
-		foreach arg in args:
-			pl.addToParams(arg)
-		Log.debug(ctx, "Executing command: `" .. String.asString(pl) .. "'")
-		var v = pl.execute()
-		if v != 0:
-			throw ExceptionWithString.forString("Command `" .. command .. "' returned with errors status `" .. String.forInteger(v) .. "'")
+			f = pddata.entry(command).asExecutable()
+		if f.isFile() {
+			var pl = ProcessLauncher.forFile(f)
+			if not pl:
+				throw ExceptionWithString.forString("Failed to create process launcher for file: `" .. f.getPath() .. "'")
+			pl.setCwd(cwd)
+			pl.setEnv(plenv)
+			foreach arg in args:
+				pl.addToParams(arg)
+			Log.debug(ctx, "Executing command: `" .. String.asString(pl) .. "'")
+			var eb = new StringBuilder()
+			pl.setErrorBuffer(eb)
+			var v = pl.execute()
+			if v != 0:
+				throw ExceptionWithString.forString("Command `" .. command .. "' returned with error status `" .. String.forInteger(v) .. "': " .. eb.toString())
+			continue
+		}
+		throw ExceptionWithString.forString("Cannot execute command `" .. command .. "' from package directory `" .. packageDirectory.getPath() .. "' (command executable not found)")
 	}
 }
 

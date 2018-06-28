@@ -22,8 +22,8 @@
 # SOFTWARE.
 #
 
-use eqela:sling:r304
-use igelle:tools:r3
+use eqela:slingc:r308
+use eqela:jsh:r1
 use eqela:jkop:20180421
 set version ${date}
 set name eqela-cli-${date}
@@ -36,27 +36,51 @@ buildApp {
 	info
 	info Building app: ${id}
 	info
-	eqela:sling/slingc src/${id} -target=dotnet -Dsling_project_version=${version} -libdir=${eqela:jkop}/src -output=build/app/${id}
+	eqela:slingc src/${id} -target=netcore -Dsling_project_version=${version} -libdir=${eqela:jkop}/src -output=build/app/${id} -debug
 }
 
 buildAppRelease {
 	info
 	info Building app: ${id}
 	info
-	eqela:sling/slingc src/${id} -target=dotnet -Dsling_project_version=${version} -libdir=${eqela:jkop}/src -output=build/app/${id} -OstaticBuild=true
+	eqela:slingc src/${id} -target=netcore -Dsling_project_version=${version} -libdir=${eqela:jkop}/src -output=build/app/${id} -OstaticBuild=true
 }
 
 release {
-	igelle:tools/delete build
+	eqela:jsh delete build
 	call buildAppRelease id=eqela
-	igelle:tools/cpto build/${name} \
+	eqela:jsh cpto build/${name}-${version} \
 		build/app/*/*.dll \
 		build/app/*/*.exe
-	igelle:tools/delete build/${name}/sling.module
-	igelle:tools/delete build/${name}/src
-	igelle:tools/zipdir build/${name}
+	eqela:jsh delete build/${name}-${version}/sling.module
+	eqela:jsh delete build/${name}-${version}/src
+	eqela:jsh zipdir build/${name}-${version}
+}
+
+releaseng {
+	call releaseNetCore platform=win-x86
+	call releaseNetCore platform=win-x64
+	call releaseNetCore platform=linux-x64
+	call releaseNetCore platform=osx.10.12-x64
+}
+
+releaseNetCore {
+	info
+	info Building for .NET Core, target platform: ${platform}
+	info
+	eqela:jsh delete build/netcore/${platform}
+	eqela:slingc src/eqela -target=netcore -Dsling_project_version=${version} -libdir=${eqela:jkop}/src \
+		-output=build/netcore/${platform}/app/eqela -OstaticBuild=true -OreleaseBuild=true -OreleasePlatform=${platform}
+	eqela:jsh cpto build/netcore/${platform}/${name}_${version}_${platform} \
+		build/netcore/${platform}/app/*/*.dll \
+		build/netcore/${platform}/app/*/*.so \
+		build/netcore/${platform}/app/*/eqela \
+		build/netcore/${platform}/app/*/eqela.exe
+	eqela:jsh delete build/netcore/${platform}/${name}_${version}_${platform}/sling.module
+	eqela:jsh delete build/netcore/${platform}/${name}_${version}_${platform}/src
+	eqela:jsh zipdir build/netcore/${platform}/${name}_${version}_${platform}
 }
 
 clean {
-	igelle:tools/delete build
+	eqela:jsh delete build
 }

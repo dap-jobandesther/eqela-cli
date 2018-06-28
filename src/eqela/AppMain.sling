@@ -30,6 +30,26 @@ import capex.web
 
 var api = new LiveService()
 var exc = new ExecutionContext()
+var platform as string
+
+ctor
+{
+	var cpu = OS.getProcessorType()
+	if String.isEmpty(cpu):
+		cpu = "unknown"
+	if OS.isWindows() {
+		platform = "windows-" .. cpu
+	}
+	else if OS.isMacOS() {
+		platform = "macos-" .. cpu
+	}
+	else if OS.isLinux() {
+		platform = "linux-" .. cpu
+	}
+	else {
+		platform = "unknown-" .. cpu
+	}
+}
 
 func getConfigFile as File:
 	return Environment.getApplicationDataDirectory("eqela").entry("client.config")
@@ -72,6 +92,7 @@ func usage
 	info.addOption("cachedir", "path", "Specify an alternative cache directory")
 	info.addOption("P<vendor:name>", "directory", "Configure a static package path")
 	info.addOption("api", "url", "Specify an alternative URL for Eqela Live service")
+	info.addOption("platform", "name", "Specify a custom execution platform name")
 	info.addSection("Subcommands")
 	info.addParameter("script", "Execute a local script")
 	info.addParameter("run", "Run a single command or statement")
@@ -215,6 +236,110 @@ func executeRun(args as vector<CommandLineArgument>) private as bool
 	return exc.executeScript(script, "execute", new vector<string>)
 }
 
+func executeExecdll(args as vector<CommandLineArgument>) private as bool
+{
+	var dll as File
+	var arguments = new vector<string>
+	foreach arg in args {
+		if dll == null {
+			dll = File.forPath(arg.arg)
+			continue
+		}
+		arguments += arg.arg
+	}
+	assert dll:
+		Log.error(ctx, "No dll file specified.")
+	assert dll.isFile():
+		Log.error(ctx, "Not a file: `" .. dll.getPath() .. "'")
+	var id = dll.getBasenameWithoutExtension()
+	var classname #used = id .. "." .. String.capitalize(id) .. "App"
+	Log.debug(ctx, "Looking for main class `" .. classname .. "' in DLL: `" .. dll.getPath() .. "'")
+	var argumentsArray = new string[Vector.getSize(arguments)]
+	for(var n=0; n<Vector.getSize(arguments); n++) {
+		argumentsArray[n] = arguments[n]
+	}
+	var dlldir #used = dll.getParent()
+	var appdir as File
+	var appfile = CurrentProcess.getExecutableFile()
+	if appfile:
+		appdir = appfile.getParent()
+	IFDEF "target_netx" {
+		lang "cs" {{{
+			System.Reflection.Assembly myAssembly = null;
+			try {
+				myAssembly = System.Runtime.Loader.AssemblyLoadContext.Default.LoadFromAssemblyPath(dll.getPath());
+				if(myAssembly == null) {
+					cape.Log.error(ctx, "Failed to load assembly: `" + dll.getPath() + "'");
+					return false;
+				}
+			}
+			catch(System.Exception e) {
+				cape.Log.error(ctx, "Error while loading assembly: " + e.ToString());
+				return false;
+			}
+			try {
+				var references = myAssembly.GetReferencedAssemblies();
+				foreach(var reference in references) {
+					var reffile = dlldir.entry(reference.Name + ".dll");
+					if(reffile.isFile() == false) {
+						if(appdir != null) {
+							reffile = appdir.entry(reference.Name + ".dll");
+						}
+					}
+					if(reffile.isFile() == false) {
+						cape.Log.error(ctx, "Failed to find referenced assembly: `" + reference.Name + "'");
+						return false;
+					}
+					cape.Log.debug(ctx, "Reading referenced assembly: `" + reffile.getPath() + "'");
+					System.Runtime.Loader.AssemblyLoadContext.Default.LoadFromAssemblyPath(reffile.getPath());
+				}
+			}
+			catch(System.Exception e) {
+				cape.Log.error(ctx, "Error while loading external references: " + e.ToString());
+				return false;
+			}
+			System.Type myType = null;
+			try {
+				myType = myAssembly.GetType(classname, true);
+				if(myType == null) {
+					cape.Log.error(ctx, "Failed to find a main class in assembly: `" + dll.getPath() + "'");
+					return false;
+				}
+			}
+			catch(System.Exception e) {
+				cape.Log.error(ctx, "Error while looking for main class: " + e.ToString());
+				return false;
+			}
+			System.Reflection.MethodInfo mainMethod = null;
+			try {
+				mainMethod = myType.GetMethod("Main");
+				if(mainMethod == null) {
+					cape.Log.error(ctx, "Main class `" + classname + "' in assembly does not have `Main' method: `" + dll.getPath() + "'");
+					return false;
+				}
+			}
+			catch(System.Exception e) {
+				cape.Log.error(ctx, "Error while looking for main method: " + e.ToString());
+				return false;
+			}
+			try {
+				var v = mainMethod.Invoke(null, new object[] { argumentsArray });
+				if(v != null && v is int && ((int)v) == 0) {
+					return true;
+				}
+			}
+			catch(System.Exception e) {
+				cape.Log.error(ctx, "Error while executing main method: " + e.ToString());
+			}
+		}}}
+		return false
+	}
+	ELSE {
+		Log.error(ctx, "DLL loading is not supported on this platform.")
+		return false
+	}
+}
+
 func executeInstall(args as vector<CommandLineArgument>) private as bool
 {
 	var force = false
@@ -251,6 +376,8 @@ func executeCommand(cmd as string, cmdArgs as vector<CommandLineArgument>) as bo
 		return executeInstall(cmdArgs)
 	if cmd == "run":
 		return executeRun(cmdArgs)
+	if cmd == "execdll":
+		return executeExecdll(cmdArgs)
 	if cmd == "login":
 		return executeLogin(cmdArgs)
 	if cmd == "logout":
@@ -273,7 +400,7 @@ func execute override as bool
 	if not webclient:
 		Log.warning(ctx, "No webclient available. Cannot perform any online actions.")
 	exc.setCtx(ctx)
-	exc.addToRepositories(PackageRepository.forUrl("http://qx.eqela.com", webclient))
+	exc.addToRepositories(PackageRepository.forUrl("http://qx.eqela.com", webclient, platform))
 	var command as string
 	var commandArgs = new vector<CommandLineArgument>
 	foreach arg in args {
@@ -293,10 +420,13 @@ func execute override as bool
 			exc.setForceUpdatePackages(true)
 		}
 		else if arg.isOption("repository") {
-			exc.addToRepositories(PackageRepository.forUrl(arg.value, webclient))
+			exc.addToRepositories(PackageRepository.forUrl(arg.value, webclient, platform))
 		}
 		else if arg.isOption("cachedir") {
 			exc.setCacheDirectory(File.forPath(arg.value))
+		}
+		else if arg.isOption("platform") {
+			platform = arg.value
 		}
 		else if arg.isOption() && (String.startsWith(arg.key, "P") || String.startsWith(arg.key, "T") || String.startsWith(arg.key, "L")) {
 			exc.addToCustomPackagePaths(String.getSubString(arg.key, 1), File.forPath(arg.value))
@@ -322,6 +452,7 @@ func execute override as bool
 		usage()
 		return false
 	}
+	exc.setPlatform(platform)
 	if ctx.isInDebugMode() {
 		api.setDebugCallback(func(info as string) {
 			Log.debug(ctx, "[API] " .. info)
