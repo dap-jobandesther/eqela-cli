@@ -36,7 +36,7 @@ buildApp {
 	info
 	info Building app: ${id}
 	info
-	eqela:slingc src/${id} -target=netcore -Dsling_project_version=${version} -libdir=${eqela:jkop}/src -output=build/app/${id} -debug
+	eqela:slingc src/${id} -target=netcore -Dsling_project_version=${version} -libdir=${eqela:jkop}/src -output=build/app/${id}
 }
 
 buildAppRelease {
@@ -74,6 +74,7 @@ releaseNetCore {
 	eqela:jsh cpto build/netcore/${platform}/${name}_${version}_${platform} \
 		build/netcore/${platform}/app/*/*.dll \
 		build/netcore/${platform}/app/*/*.so \
+		build/netcore/${platform}/app/*/*.dylib \
 		build/netcore/${platform}/app/*/eqela \
 		build/netcore/${platform}/app/*/eqela.exe
 	eqela:jsh delete build/netcore/${platform}/${name}_${version}_${platform}/sling.module

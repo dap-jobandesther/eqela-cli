@@ -394,7 +394,6 @@ func executeCommand(cmd as string, cmdArgs as vector<CommandLineArgument>) as bo
 
 func execute override as bool
 {
-	handleVerbosityParams()
 	readConfig()
 	var webclient = NativeWebClient.instance()
 	if not webclient:
@@ -411,6 +410,9 @@ func execute override as bool
 		if arg.isFlag("help") || arg.isFlag("h") {
 			usage()
 			return true
+		}
+		else if arg.isFlag("debug") {
+			setVerbosityLevel(4)
 		}
 		else if arg.isFlag("version") || arg.isFlag("v") {
 			PRINT VALUE "version"
