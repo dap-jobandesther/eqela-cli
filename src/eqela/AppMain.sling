@@ -236,6 +236,49 @@ func executeRun(args as vector<CommandLineArgument>) private as bool
 	return exc.executeScript(script, "execute", new vector<string>)
 }
 
+IFDEF "target_netx" {
+	func loadReferencedAssemblies(myAssembly as !"System.Reflection.Assembly", dlldir as File, appdir as File) as bool
+	{
+		assert myAssembly:
+			Log.error(ctx, "Null assembly!")
+		lang "cs" {{{
+			try {
+				var references = myAssembly.GetReferencedAssemblies();
+				foreach(var reference in references) {
+					var fromappdir = false;
+					var reffile = dlldir.entry(reference.Name + ".dll");
+					if(reffile.isFile() == false) {
+						if(appdir != null) {
+							reffile = appdir.entry(reference.Name + ".dll");
+							fromappdir = true;
+						}
+					}
+					if(reffile.isFile() == false) {
+						cape.Log.error(ctx, "Failed to find referenced assembly: `" + reference.Name + "'");
+						return false;
+					}
+					cape.Log.debug(ctx, "Reading referenced assembly: `" + reffile.getPath() + "'");
+					var a2 = System.Runtime.Loader.AssemblyLoadContext.Default.LoadFromAssemblyPath(reffile.getPath());
+					if(a2 == null) {
+						cape.Log.error(ctx, "Failed to load assembly: `" + reffile.getPath() + "'");
+						return false;
+					}
+					if(fromappdir == false) {
+						if(loadReferencedAssemblies(a2, dlldir, appdir) == false) {
+							return false;
+						}
+					}
+				}
+			}
+			catch(System.Exception e) {
+				cape.Log.error(ctx, "Error while loading external references: " + e.ToString());
+				return false;
+			}
+		}}}
+		return true
+	}
+}
+
 func executeExecdll(args as vector<CommandLineArgument>) private as bool
 {
 	var dll as File
@@ -277,25 +320,8 @@ func executeExecdll(args as vector<CommandLineArgument>) private as bool
 				cape.Log.error(ctx, "Error while loading assembly: " + e.ToString());
 				return false;
 			}
-			try {
-				var references = myAssembly.GetReferencedAssemblies();
-				foreach(var reference in references) {
-					var reffile = dlldir.entry(reference.Name + ".dll");
-					if(reffile.isFile() == false) {
-						if(appdir != null) {
-							reffile = appdir.entry(reference.Name + ".dll");
-						}
-					}
-					if(reffile.isFile() == false) {
-						cape.Log.error(ctx, "Failed to find referenced assembly: `" + reference.Name + "'");
-						return false;
-					}
-					cape.Log.debug(ctx, "Reading referenced assembly: `" + reffile.getPath() + "'");
-					System.Runtime.Loader.AssemblyLoadContext.Default.LoadFromAssemblyPath(reffile.getPath());
-				}
-			}
-			catch(System.Exception e) {
-				cape.Log.error(ctx, "Error while loading external references: " + e.ToString());
+			if(loadReferencedAssemblies(myAssembly, dlldir, appdir) == false) {
+				cape.Log.error(ctx, "Failed to load referenced assemblies.");
 				return false;
 			}
 			System.Type myType = null;

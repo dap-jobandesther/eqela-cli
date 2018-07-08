@@ -23,10 +23,10 @@
 #
 
 use eqela:slingc:r308
-use eqela:jsh:r1
+use eqela:jsh:r2
 use eqela:jkop:20180421
 set version ${date}
-set name eqela-cli-${date}
+set name eqela-cli
 
 build {
 	call buildApp id=eqela
@@ -39,34 +39,18 @@ buildApp {
 	eqela:slingc src/${id} -target=netcore -Dsling_project_version=${version} -libdir=${eqela:jkop}/src -output=build/app/${id}
 }
 
-buildAppRelease {
-	info
-	info Building app: ${id}
-	info
-	eqela:slingc src/${id} -target=netcore -Dsling_project_version=${version} -libdir=${eqela:jkop}/src -output=build/app/${id} -OstaticBuild=true
-}
-
 release {
-	eqela:jsh delete build
-	call buildAppRelease id=eqela
-	eqela:jsh cpto build/${name}-${version} \
-		build/app/*/*.dll \
-		build/app/*/*.exe
-	eqela:jsh delete build/${name}-${version}/sling.module
-	eqela:jsh delete build/${name}-${version}/src
-	eqela:jsh zipdir build/${name}-${version}
+	call buildReleaseForPlatform platform=win-x86 pkgcmd=zipdir
+	call buildReleaseForPlatform platform=win-x64 pkgcmd=zipdir
+	call buildReleaseForPlatform platform=linux-x64 pkgcmd=tardir
+	call buildReleaseForPlatform platform=osx.10.12-x64 pkgcmd=tardir
+	eqela:jsh delete build/netcore/${name}-${version}_release
+	eqela:jsh cpto build/netcore/${name}-${version}_release build/netcore/*/*.zip build/netcore/*/*.tar.gz
 }
 
-releaseng {
-	call releaseNetCore platform=win-x86
-	call releaseNetCore platform=win-x64
-	call releaseNetCore platform=linux-x64
-	call releaseNetCore platform=osx.10.12-x64
-}
-
-releaseNetCore {
+buildReleaseForPlatform {
 	info
-	info Building for .NET Core, target platform: ${platform}
+	info Building for target platform: ${platform}
 	info
 	eqela:jsh delete build/netcore/${platform}
 	eqela:slingc src/eqela -target=netcore -Dsling_project_version=${version} -libdir=${eqela:jkop}/src \
@@ -79,7 +63,7 @@ releaseNetCore {
 		build/netcore/${platform}/app/*/eqela.exe
 	eqela:jsh delete build/netcore/${platform}/${name}_${version}_${platform}/sling.module
 	eqela:jsh delete build/netcore/${platform}/${name}_${version}_${platform}/src
-	eqela:jsh zipdir build/netcore/${platform}/${name}_${version}_${platform}
+	eqela:jsh ${pkgcmd} build/netcore/${platform}/${name}_${version}_${platform}
 }
 
 clean {
